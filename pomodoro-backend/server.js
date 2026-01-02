@@ -13,6 +13,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Healthcheck / keep-alive route (use this for Render cron / uptime monitors)
+app.get('/api/ping', (_req, res) => {
+  res.status(200).send('hi ping');
+});
+
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('MongoDB connection error:', err));
