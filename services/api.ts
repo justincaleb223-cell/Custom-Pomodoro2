@@ -36,7 +36,14 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 //
 // For Expo Go on physical device, replace YOUR_COMPUTER_IP with your actual IP
 // To find your IP on Windows: Run 'ipconfig' and look for "IPv4 Address"
-const API_BASE_URL = "http://192.168.1.2:5000/api";
+// const API_BASE_URL = "http://192.168.1.2:5000/api";
+//
+// Prefer an env var so EAS builds can point to your deployed backend without code changes.
+// Set in EAS (or `eas.json` build profile) as:
+//   EXPO_PUBLIC_API_BASE_URL=https://custom-pomodoro.onrender.com/api
+const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_BASE_URL ||
+  "https://custom-pomodoro2-1.onrender.com";
 
 // Helper function to get auth token
 async function getAuthToken(): Promise<string | null> {

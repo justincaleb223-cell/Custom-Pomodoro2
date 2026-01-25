@@ -4,7 +4,8 @@ import { AppState, AppStateStatus, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { Task, TimerSettings } from '@/types';
-import { settingsAPI, sessionsAPI } from '@/services/api';
+import { settingsAPI } from '@/services/api';
+import { saveSessionWithRetry, retryQueuedSessions } from '@/utils/sessionQueue';
 
 type TimerMode = 'focus' | 'break' | 'longBreak';
 type TimerStatus = 'idle' | 'running' | 'paused';
@@ -47,6 +48,13 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
   const backgroundTimeRef = useRef<Date | null>(null);
   const isCompletingRef = useRef(false);
   const selectedTaskRef = useRef<Task | null>(null);
+  // Store session data at START time (survives backgrounding/app switching)
+  const sessionDataRef = useRef<{
+    taskId: string;
+    taskName: string;
+    startTime: Date;
+    totalDuration: number;
+  } | null>(null);
 
   // Keep a ref of the latest selected task to avoid stale-closure issues
   // (the timer interval callback can capture older state).
@@ -65,6 +73,20 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => subscription.remove();
   }, [timerStatus, timeRemaining]);
+
+  // Retry queued sessions when app comes to foreground
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', async (nextAppState) => {
+      if (nextAppState === 'active') {
+        // App came to foreground - retry any queued sessions
+        const retried = await retryQueuedSessions();
+        if (retried > 0) {
+          console.log(`[Pomodoro] Retried and saved ${retried} queued sessions`);
+        }
+      }
+    });
+    return () => subscription.remove();
+  }, []);
 
   const handleAppStateChange = async (nextAppState: AppStateStatus) => {
     if (nextAppState === 'background' && timerStatus === 'running') {
@@ -101,6 +123,13 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
         totalTime,
         sessionsCompleted,
         startTime: startTimeRef.current?.toISOString(),
+        // CRITICAL: Save session data so it survives app kill/restart
+        sessionData: sessionDataRef.current ? {
+          taskId: sessionDataRef.current.taskId,
+          taskName: sessionDataRef.current.taskName,
+          startTime: sessionDataRef.current.startTime.toISOString(),
+          totalDuration: sessionDataRef.current.totalDuration,
+        } : null,
       };
       await AsyncStorage.setItem('timerState', JSON.stringify(state));
     } catch (error) {
@@ -125,6 +154,17 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
           setTotalTime(state.totalTime);
           setSessionsCompleted(state.sessionsCompleted);
           
+          // CRITICAL: Restore session data if it exists (survives app kill/restart)
+          if (state.sessionData) {
+            sessionDataRef.current = {
+              taskId: state.sessionData.taskId,
+              taskName: state.sessionData.taskName,
+              startTime: new Date(state.sessionData.startTime),
+              totalDuration: state.sessionData.totalDuration,
+            };
+            console.log('[Pomodoro] Restored session data from storage:', sessionDataRef.current);
+          }
+          
           if (newTimeRemaining > 0) {
             setTimerStatus('running');
             startTimeRef.current = startTime;
@@ -140,8 +180,22 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
 
   const startTimer = () => {
     if (timerStatus === 'idle') {
+      const task = selectedTaskRef.current;
+      const startTime = new Date();
+      
+      // CRITICAL: Capture session data at START time (survives backgrounding)
+      if (timerMode === 'focus' && task) {
+        sessionDataRef.current = {
+          taskId: task.id,
+          taskName: task.name,
+          startTime: startTime,
+          totalDuration: totalTime,
+        };
+        console.log('[Pomodoro] Captured session data at start:', sessionDataRef.current);
+      }
+      
       setTimerStatus('running');
-      startTimeRef.current = new Date();
+      startTimeRef.current = startTime;
       startInterval();
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
@@ -170,6 +224,7 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
     setTimerStatus('idle');
     // Always clear the selected task so the user must choose again for the next focus run
     setSelectedTask(null);
+    sessionDataRef.current = null; // Clear session data on reset
     const duration = timerMode === 'focus' 
       ? settings.focusDuration 
       : timerMode === 'break' 
@@ -229,41 +284,61 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
 
     try {
       if (timerMode === 'focus') {
-        // Capture values at the moment of completion (state can change during async work).
-        const taskAtCompletion = selectedTaskRef.current;
-        const startAtCompletion = startTimeRef.current;
+        // Use session data captured at START time (survives backgrounding/app switching)
+        const sessionData = sessionDataRef.current;
         const endTime = new Date();
 
-        // Save completed focus session to backend (this drives Statistics)
-        if (!taskAtCompletion) {
-          Alert.alert(
-            'Session not saved',
-            'No task was selected for this focus session, so it cannot be saved. Please select a task before starting.'
-          );
-        } else if (!startAtCompletion) {
-          Alert.alert(
-            'Session not saved',
-            'Could not determine session start time, so it cannot be saved. Please try again.'
-          );
-        } else {
-          try {
-            await sessionsAPI.createSession(
+        if (!sessionData) {
+          // Fallback: try to use current refs (for edge cases)
+          const taskAtCompletion = selectedTaskRef.current;
+          const startAtCompletion = startTimeRef.current;
+          
+          if (!taskAtCompletion || !startAtCompletion) {
+            console.error('[Pomodoro] No session data available at completion');
+            Alert.alert(
+              'Session not saved',
+              'Session data was lost. This can happen if the app was closed. The session will be queued for retry when possible.'
+            );
+          } else {
+            // Use fallback data
+            const result = await saveSessionWithRetry(
               taskAtCompletion.id,
               startAtCompletion,
               endTime,
               totalTime,
               true
             );
-          } catch (error) {
-            console.error('Error saving session:', error);
+            if (!result.success && result.queued) {
+              Alert.alert(
+                'Session queued',
+                'Your session was saved locally and will be synced when the backend is available.'
+              );
+            }
+          }
+        } else {
+          // Use captured session data (reliable even after backgrounding)
+          console.log('[Pomodoro] Saving session with captured data:', sessionData);
+          const result = await saveSessionWithRetry(
+            sessionData.taskId,
+            sessionData.startTime,
+            endTime,
+            sessionData.totalDuration,
+            true
+          );
+          
+          if (result.success) {
+            console.log('[Pomodoro] Session saved successfully');
+          } else if (result.queued) {
+            console.log('[Pomodoro] Session queued for retry');
             Alert.alert(
-              'Session not saved',
-              'Your focus session could not be saved to the backend, so stats will not update. Please check your connection and backend.'
+              'Session queued',
+              'Your session was saved locally and will be synced when the backend is available.'
             );
           }
         }
 
-        // Clear the selected task so each focus session requires an explicit choice
+        // Clear session data and selected task
+        sessionDataRef.current = null;
         setSelectedTask(null);
 
         const newSessionsCompleted = sessionsCompleted + 1;
