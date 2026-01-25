@@ -7,18 +7,48 @@ const auth = require('../middleware/auth');
 const router = express.Router();
 
 router.post('/', auth, async (req, res) => {
+  const requestId = req.requestId || 'unknown';
+  console.log(`[SESSION] [REQ-${requestId}] ⚡ POST /api/sessions route handler called at ${new Date().toISOString()}`);
   try {
-    console.log(`[SESSION] Creating session for user: ${req.userId}`);
-    console.log(`[SESSION] Session data:`, JSON.stringify({ ...req.body, userId: req.userId }));
+    const { taskId, startTime, endTime, duration, completed } = req.body;
+    console.log(`[SESSION] [REQ-${requestId}] Creating session for user: ${req.userId}`);
+    console.log(`[SESSION] [REQ-${requestId}] Session data:`, JSON.stringify({ 
+      taskId, 
+      startTime, 
+      endTime, 
+      duration, 
+      completed,
+      userId: req.userId 
+    }));
+    
+    // Try to get task name for better logging
+    let taskName = 'Unknown';
+    if (taskId) {
+      try {
+        const task = await Task.findById(taskId);
+        if (task) taskName = task.name;
+      } catch (e) {
+        console.log(`[SESSION] [REQ-${requestId}] Could not fetch task name:`, e.message);
+      }
+    }
+    
+    console.log(`[SESSION] [REQ-${requestId}] Task name: "${taskName}", Duration: ${duration} minutes`);
     
     const session = new Session({ ...req.body, userId: req.userId });
     await session.save();
     
-    console.log(`[SESSION] Session saved successfully: ${session._id} for user: ${req.userId}, task: ${session.taskId}, duration: ${session.duration}`);
+    console.log(`[SESSION] [REQ-${requestId}] ✅ Session saved successfully!`);
+    console.log(`[SESSION] [REQ-${requestId}] Session ID: ${session._id}`);
+    console.log(`[SESSION] [REQ-${requestId}] User: ${req.userId}, Task: ${taskName} (${taskId}), Duration: ${duration} min`);
+    console.log(`[SESSION] [REQ-${requestId}] Start: ${startTime}, End: ${endTime}`);
+    // Summary line for easy searching
+    console.log(`[SESSION-SUMMARY] [REQ-${requestId}] SAVED | User:${req.userId} | Task:"${taskName}" | Duration:${duration}min | SessionID:${session._id}`);
+    
     res.json(session);
   } catch (error) {
-    console.error(`[SESSION] Error creating session:`, error.message);
-    console.error(`[SESSION] Error stack:`, error.stack);
+    console.error(`[SESSION] [REQ-${requestId}] ❌ Error creating session:`, error.message);
+    console.error(`[SESSION] [REQ-${requestId}] Error stack:`, error.stack);
+    console.error(`[SESSION] [REQ-${requestId}] Request body was:`, JSON.stringify(req.body));
     res.status(400).json({ message: error.message });
   }
 });

@@ -16,19 +16,32 @@ app.use(express.json());
 // Request logging middleware
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${req.method} ${req.path}`);
+  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  req.requestId = requestId; // Attach to request for correlation
+  
+  console.log(`[${timestamp}] [REQ-${requestId}] ${req.method} ${req.path}`);
   if (req.body && Object.keys(req.body).length > 0) {
     // Log request body but hide sensitive data
     const sanitizedBody = { ...req.body };
     if (sanitizedBody.password) sanitizedBody.password = '[HIDDEN]';
-    console.log(`[${timestamp}] Request body:`, JSON.stringify(sanitizedBody));
+    console.log(`[${timestamp}] [REQ-${requestId}] Request body:`, JSON.stringify(sanitizedBody));
   }
   
-  // Log response status
+  // Log response status for both send and json
   const originalSend = res.send;
+  const originalJson = res.json;
+  
   res.send = function(data) {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - Status: ${res.statusCode}`);
+    console.log(`[${new Date().toISOString()}] [REQ-${requestId}] ${req.method} ${req.path} - Status: ${res.statusCode}`);
     originalSend.call(this, data);
+  };
+  
+  res.json = function(data) {
+    console.log(`[${new Date().toISOString()}] [REQ-${requestId}] ${req.method} ${req.path} - Status: ${res.statusCode}`);
+    if (req.path.includes('/sessions') && req.method === 'POST') {
+      console.log(`[${new Date().toISOString()}] [REQ-${requestId}] Session response:`, JSON.stringify(data));
+    }
+    originalJson.call(this, data);
   };
   
   next();
