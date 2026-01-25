@@ -13,8 +13,30 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Request logging middleware
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${req.method} ${req.path}`);
+  if (req.body && Object.keys(req.body).length > 0) {
+    // Log request body but hide sensitive data
+    const sanitizedBody = { ...req.body };
+    if (sanitizedBody.password) sanitizedBody.password = '[HIDDEN]';
+    console.log(`[${timestamp}] Request body:`, JSON.stringify(sanitizedBody));
+  }
+  
+  // Log response status
+  const originalSend = res.send;
+  res.send = function(data) {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - Status: ${res.statusCode}`);
+    originalSend.call(this, data);
+  };
+  
+  next();
+});
+
 // Healthcheck / keep-alive route (use this for Render cron / uptime monitors)
 app.get("/api/ping", (_req, res) => {
+  console.log(`[PING] Health check requested at ${new Date().toISOString()}`);
   res.status(200).send("hi ping");
 });
 

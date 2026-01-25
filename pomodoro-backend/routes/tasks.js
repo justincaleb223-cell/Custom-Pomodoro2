@@ -6,9 +6,12 @@ const router = express.Router();
 
 router.get('/', auth, async (req, res) => {
   try {
+    console.log(`[TASK] Fetching tasks for user: ${req.userId}`);
     const tasks = await Task.find({ userId: req.userId });
+    console.log(`[TASK] Retrieved ${tasks.length} tasks for user: ${req.userId}`);
     res.json(tasks);
   } catch (error) {
+    console.error(`[TASK] Error fetching tasks:`, error.message);
     res.status(500).json({ message: error.message });
   }
 });
@@ -27,10 +30,14 @@ router.get('/:id', auth, async (req, res) => {
 
 router.post('/', auth, async (req, res) => {
   try {
+    console.log(`[TASK] Creating task for user: ${req.userId}`);
+    console.log(`[TASK] Task data:`, JSON.stringify(req.body));
     const task = new Task({ ...req.body, userId: req.userId });
     await task.save();
+    console.log(`[TASK] Task created successfully: ${task._id} - ${task.name}`);
     res.json(task);
   } catch (error) {
+    console.error(`[TASK] Error creating task:`, error.message);
     res.status(400).json({ message: error.message });
   }
 });

@@ -8,10 +8,17 @@ const router = express.Router();
 
 router.post('/', auth, async (req, res) => {
   try {
+    console.log(`[SESSION] Creating session for user: ${req.userId}`);
+    console.log(`[SESSION] Session data:`, JSON.stringify({ ...req.body, userId: req.userId }));
+    
     const session = new Session({ ...req.body, userId: req.userId });
     await session.save();
+    
+    console.log(`[SESSION] Session saved successfully: ${session._id} for user: ${req.userId}, task: ${session.taskId}, duration: ${session.duration}`);
     res.json(session);
   } catch (error) {
+    console.error(`[SESSION] Error creating session:`, error.message);
+    console.error(`[SESSION] Error stack:`, error.stack);
     res.status(400).json({ message: error.message });
   }
 });
@@ -48,6 +55,7 @@ router.get('/task/:taskId', auth, async (req, res) => {
 
 router.get('/stats/daily', auth, async (req, res) => {
   try {
+    console.log(`[STATS] Fetching daily stats for user: ${req.userId}`);
     const userObjectId = new mongoose.Types.ObjectId(req.userId);
     const sessions = await Session.aggregate([
       // In aggregations, MongoDB does not cast string -> ObjectId for us
@@ -69,14 +77,17 @@ router.get('/stats/daily', auth, async (req, res) => {
       totalFocusTime: s.totalFocusTime
     }));
     
+    console.log(`[STATS] Daily stats retrieved: ${formatted.length} days for user: ${req.userId}`);
     res.json(formatted);
   } catch (error) {
+    console.error(`[STATS] Error fetching daily stats:`, error.message);
     res.status(500).json({ message: error.message });
   }
 });
 
 router.get('/stats/tasks', auth, async (req, res) => {
   try {
+    console.log(`[STATS] Fetching task stats for user: ${req.userId}`);
     const userObjectId = new mongoose.Types.ObjectId(req.userId);
     const sessions = await Session.aggregate([
       // In aggregations, MongoDB does not cast string -> ObjectId for us
@@ -108,8 +119,10 @@ router.get('/stats/tasks', auth, async (req, res) => {
       totalFocusTime: s.totalFocusTime
     }));
     
+    console.log(`[STATS] Task stats retrieved: ${formatted.length} tasks for user: ${req.userId}`);
     res.json(formatted);
   } catch (error) {
+    console.error(`[STATS] Error fetching task stats:`, error.message);
     res.status(500).json({ message: error.message });
   }
 });
