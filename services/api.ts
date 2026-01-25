@@ -43,7 +43,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 //   EXPO_PUBLIC_API_BASE_URL=https://custom-pomodoro.onrender.com/api
 const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL ||
-  "https://custom-pomodoro2-1.onrender.com";
+  "https://custom-pomodoro2-1.onrender.com/api";
 
 // Helper function to get auth token
 async function getAuthToken(): Promise<string | null> {
@@ -99,21 +99,52 @@ async function authenticatedFetch(url: string, options: RequestInit = {}) {
       headers,
     });
 
+    // Check if response is JSON before parsing
+    const contentType = response.headers.get("content-type");
+    const isJson = contentType?.includes("application/json");
+
     if (!response.ok) {
-      const error = await response
-        .json()
-        .catch(() => ({ message: "Request failed" }));
-      throw new Error(
-        error.message || `Request failed with status ${response.status}`
-      );
+      let errorMessage = `Request failed with status ${response.status}`;
+      
+      if (isJson) {
+        try {
+          const error = await response.json();
+          errorMessage = error.message || errorMessage;
+        } catch {
+          // JSON parse failed, use default message
+        }
+      } else {
+        // Response is HTML (error page) - try to get text for debugging
+        try {
+          const text = await response.text();
+          console.error(`[API] Non-JSON error response: ${text.substring(0, 200)}`);
+          if (response.status === 404) {
+            errorMessage = `Backend endpoint not found. Check if API_BASE_URL is correct: ${API_BASE_URL}`;
+          } else if (response.status >= 500) {
+            errorMessage = `Backend server error (${response.status}). The server may be down or misconfigured.`;
+          } else {
+            errorMessage = `Backend returned HTML instead of JSON (${response.status}). Check API_BASE_URL: ${API_BASE_URL}`;
+          }
+        } catch {
+          // Couldn't read response text
+        }
+      }
+      
+      throw new Error(errorMessage);
+    }
+
+    if (!isJson) {
+      const text = await response.text();
+      console.error(`[API] Expected JSON but got: ${text.substring(0, 200)}`);
+      throw new Error(`Backend returned non-JSON response. Check API_BASE_URL: ${API_BASE_URL}`);
     }
 
     return response.json();
   } catch (error: any) {
-    if (error.message) {
+    if (error.message && !error.message.includes("Network error")) {
       throw error;
     }
-    throw new Error("Network error: Could not connect to backend server");
+    throw new Error(`Network error: Could not connect to backend at ${API_BASE_URL}. Check if the server is running.`);
   }
 }
 
@@ -126,9 +157,26 @@ export const authAPI = {
       body: JSON.stringify({ username, email, password }),
     });
 
+    const contentType = response.headers.get("content-type");
+    const isJson = contentType?.includes("application/json");
+
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || "Signup failed");
+      if (isJson) {
+        try {
+          const error = await response.json();
+          throw new Error(error.message || "Signup failed");
+        } catch (parseError) {
+          throw new Error(`Signup failed (${response.status}). Backend may be down.`);
+        }
+      } else {
+        const text = await response.text().catch(() => "");
+        console.error(`[Auth] Non-JSON signup error: ${text.substring(0, 200)}`);
+        throw new Error(`Backend returned HTML instead of JSON. Check API_BASE_URL: ${API_BASE_URL}`);
+      }
+    }
+
+    if (!isJson) {
+      throw new Error(`Backend returned non-JSON response. Check API_BASE_URL: ${API_BASE_URL}`);
     }
 
     const data = await response.json();
@@ -153,9 +201,26 @@ export const authAPI = {
       body: JSON.stringify({ email, password }),
     });
 
+    const contentType = response.headers.get("content-type");
+    const isJson = contentType?.includes("application/json");
+
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || "Login failed");
+      if (isJson) {
+        try {
+          const error = await response.json();
+          throw new Error(error.message || "Login failed");
+        } catch (parseError) {
+          throw new Error(`Login failed (${response.status}). Backend may be down.`);
+        }
+      } else {
+        const text = await response.text().catch(() => "");
+        console.error(`[Auth] Non-JSON login error: ${text.substring(0, 200)}`);
+        throw new Error(`Backend returned HTML instead of JSON. Check API_BASE_URL: ${API_BASE_URL}`);
+      }
+    }
+
+    if (!isJson) {
+      throw new Error(`Backend returned non-JSON response. Check API_BASE_URL: ${API_BASE_URL}`);
     }
 
     const data = await response.json();

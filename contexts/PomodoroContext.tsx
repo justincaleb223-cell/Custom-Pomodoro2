@@ -54,6 +54,7 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
     taskName: string;
     startTime: Date;
     totalDuration: number;
+    actualEndTime?: Date; // For cases where timer completed while app was closed
   } | null>(null);
 
   // Keep a ref of the latest selected task to avoid stale-closure issues
@@ -129,6 +130,7 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
           taskName: sessionDataRef.current.taskName,
           startTime: sessionDataRef.current.startTime.toISOString(),
           totalDuration: sessionDataRef.current.totalDuration,
+          actualEndTime: sessionDataRef.current.actualEndTime?.toISOString(),
         } : null,
       };
       await AsyncStorage.setItem('timerState', JSON.stringify(state));
@@ -161,14 +163,40 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
               taskName: state.sessionData.taskName,
               startTime: new Date(state.sessionData.startTime),
               totalDuration: state.sessionData.totalDuration,
+              actualEndTime: state.sessionData.actualEndTime ? new Date(state.sessionData.actualEndTime) : undefined,
             };
             console.log('[Pomodoro] Restored session data from storage:', sessionDataRef.current);
+          } else if (state.selectedTask && state.timerMode === 'focus') {
+            // Fallback: Reconstruct session data from saved state if sessionData is missing
+            // This handles cases where app was killed before sessionData was saved
+            sessionDataRef.current = {
+              taskId: state.selectedTask.id,
+              taskName: state.selectedTask.name,
+              startTime: startTime,
+              totalDuration: state.totalTime,
+            };
+            console.log('[Pomodoro] Reconstructed session data from saved state:', sessionDataRef.current);
           }
           
           if (newTimeRemaining > 0) {
             setTimerStatus('running');
             startTimeRef.current = startTime;
           } else {
+            // Timer completed while app was closed - ensure sessionData is available
+            if (!sessionDataRef.current && state.selectedTask && state.timerMode === 'focus') {
+              // Reconstruct from saved state - calculate when timer actually completed
+              const actualEndTime = new Date(startTime.getTime() + (state.totalTime * 1000));
+              sessionDataRef.current = {
+                taskId: state.selectedTask.id,
+                taskName: state.selectedTask.name,
+                startTime: startTime,
+                totalDuration: state.totalTime,
+                // Store when it actually completed (for accurate session saving)
+                actualEndTime: actualEndTime,
+              };
+              console.log('[Pomodoro] Reconstructed session data for completed timer:', sessionDataRef.current);
+            }
+            // Timer already completed - handle completion immediately
             handleTimerComplete();
           }
         }
@@ -192,6 +220,8 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
           totalDuration: totalTime,
         };
         console.log('[Pomodoro] Captured session data at start:', sessionDataRef.current);
+        // Immediately save to AsyncStorage so it survives app kill
+        saveTimerState();
       }
       
       setTimerStatus('running');
@@ -289,12 +319,40 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
         const endTime = new Date();
 
         if (!sessionData) {
-          // Fallback: try to use current refs (for edge cases)
-          const taskAtCompletion = selectedTaskRef.current;
+          // Fallback: try to use current refs or saved state (for edge cases like app kill)
+          const taskAtCompletion = selectedTaskRef.current || selectedTask;
           const startAtCompletion = startTimeRef.current;
           
           if (!taskAtCompletion || !startAtCompletion) {
             console.error('[Pomodoro] No session data available at completion');
+            // Even without full data, try to queue what we can
+            // Check if we have any task info in AsyncStorage
+            try {
+              const savedState = await AsyncStorage.getItem('timerState');
+              if (savedState) {
+                const state = JSON.parse(savedState);
+                if (state.selectedTask && state.startTime) {
+                  // Reconstruct from saved state
+                  const result = await saveSessionWithRetry(
+                    state.selectedTask.id,
+                    new Date(state.startTime),
+                    endTime,
+                    state.totalTime || totalTime,
+                    true
+                  );
+                  if (result.queued) {
+                    Alert.alert(
+                      'Session queued',
+                      'Your session was saved locally and will be synced when the backend is available.'
+                    );
+                    return; // Exit early since we handled it
+                  }
+                }
+              }
+            } catch (err) {
+              console.error('[Pomodoro] Error trying to recover session from storage:', err);
+            }
+            
             Alert.alert(
               'Session not saved',
               'Session data was lost. This can happen if the app was closed. The session will be queued for retry when possible.'
@@ -317,11 +375,13 @@ export function PomodoroProvider({ children }: { children: React.ReactNode }) {
           }
         } else {
           // Use captured session data (reliable even after backgrounding)
-          console.log('[Pomodoro] Saving session with captured data:', sessionData);
+          // If timer completed while app was closed, use actualEndTime instead of "now"
+          const sessionEndTime = sessionData.actualEndTime || endTime;
+          console.log('[Pomodoro] Saving session with captured data:', sessionData, 'endTime:', sessionEndTime);
           const result = await saveSessionWithRetry(
             sessionData.taskId,
             sessionData.startTime,
-            endTime,
+            sessionEndTime,
             sessionData.totalDuration,
             true
           );
